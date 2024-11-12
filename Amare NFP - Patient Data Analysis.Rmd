@@ -1,0 +1,561 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+##### HDS 5960 Amare Data Consult - Capstone Project
+#### Author: Devin Ellis-Martin
+### Date: 05 August 2024
+
+### Introduction:
+
+This capstone project was completed as data consultant at Amare NFP, a non-profit recovery community organization in Wood River, Il, under supervision of Carson Conn, Executive Director. The organization assists those with substance use disorders, heavily being methamphetamine, opioid, and alcohol abuse, find treatment.
+
+The project aimed to assess the program effectiveness and overall positive outcomes within the community. This includes modeling of survey scores in order to infer correlations between participant satisfaction and the program, and survival analysis upon the occurrence of relapsing of patients for each program. 
+
+This consult will provide more clarity for the direction of the company and help support decisions when it comes to requesting state funding.  
+
+### Data Preparation:
+
+
+```{r}
+# Loading Data:
+
+library(readxl)
+#install.packages('stringr')
+library(stringr)
+
+engage <- read_xlsx("EngagementScale.xlsx")[,-c(1, 2, 3, 4)]
+intake <- read_xlsx("IntakeWorkbook.xlsx")[, -c(2, 3, 4, 7, 8, 9, 10, 11)]
+info <- read_xlsx('PatInfo.xlsx')[, -c(1, 3, 4)]
+
+engage$Person <- str_sub(engage$Person, 8)
+intake$Person <- str_sub(intake$Person, 8)
+info$Person <- str_sub(info$Person, 8)
+
+engage
+intake
+info
+```
+```{r}
+# Cleaning Data:
+library(dplyr)
+library(tidyr)
+
+engage <- engage |>
+  mutate(Date = as.Date(Date)) |>
+  rename('test.date' = Date)
+  
+intake <- intake |>
+  mutate(`Intake Type` = as.factor(`Intake Type`),
+         `As of Date` = as.Date(`As of Date`)) |>
+  rename('intake.date' = `As of Date`)
+
+info <- info |>
+  mutate(Gender = as.factor(Gender),
+         Race = as.factor(Race)) |>
+  rename('age' = 'Age',
+         'gender' = 'Gender',
+         'race' = 'Race')
+```
+```{r}
+# Grouping and Finding Latest Test/Intake Dates for Record:
+
+intake.summary <- intake %>%
+  group_by(Person) %>%
+  summarise(
+    latest.intake.date = max(intake.date),
+    intake.count = n(),
+    intake.type = first(`Intake Type`)
+  ) %>%
+  ungroup()
+
+engage.summary <- engage %>%
+  group_by(Person) %>%
+  summarise(
+    test.count = n(),
+    latest.test.date = max(test.date),
+    ORS.Score = mean(`ORS Score`),
+    CRS.Score = mean(`CRS Score`),
+    RRS.Score = mean(`RRS Score`),
+    ors.first = first(`ORS Score`, order_by = test.date),
+    ors.last = last(`ORS Score`, order_by = test.date),
+    crs.first = first(`CRS Score`, order_by = test.date),
+    crs.last = last(`CRS Score`, order_by = test.date),
+    rrs.first = first(`RRS Score`, order_by = test.date),
+    rrs.last = last(`RRS Score`, order_by = test.date),
+    .groups = 'drop'
+  ) |>
+    mutate(
+    ors.increase = ifelse(ors.last > ors.first, 1, 0),
+    rrs.increase = ifelse(rrs.last > rrs.first, 1, 0),
+    crs.decrease = ifelse(crs.last < crs.first, 1, 0)
+  ) %>%
+  ungroup()
+
+```
+
+```{r}
+# Joining Data:
+
+df.cl <- engage.summary |>
+  inner_join(intake.summary, by = "Person") %>%
+  inner_join(info, by = "Person")
+
+df.cl <- df.cl |>
+  na.omit()
+
+df.cl <- df.cl[,-c(7:12)]
+df.cl
+```
+
+### Exploratory Data Analysis:
+
+```{r}
+str(df.cl)
+```
+
+```{r}
+summary(df.cl)
+```
+```{r}
+# Avg scores amongst average scores of latest test dates:
+
+mean(df.cl$ORS.Score)
+mean(df.cl$CRS.Score)
+mean(df.cl$RRS.Score)
+```
+```{r}
+# Range of average test scores:
+
+range(df.cl$ORS.Score)
+range(df.cl$CRS.Score)
+range(df.cl$RRS.Score)
+```
+```{r}
+library(dplyr)
+library(tidyverse)
+
+engage.score.time <- ggplot(df.cl, aes(x = latest.test.date)) +
+  geom_smooth(aes(y = ORS.Score, color = "ORS Score", group = 1), method = "loess", span = 0.2) +
+  geom_smooth(aes(y = CRS.Score, color = "CRS Score", group = 2), method = "loess", span = 0.2) +
+  geom_smooth(aes(y = RRS.Score, color = "RRS Score", group = 3), method = "loess", span = 0.2) +
+  labs(title = "Smoothed Scores Over Time",
+       x = "Date",
+       y = "Score",
+       color = "Score Type") +
+  theme_minimal()
+
+engage.score.time
+```
+
+```{r}
+# Monthly Data:
+
+intake.monthly <- df.cl %>%
+  filter(!is.na(latest.intake.date)) %>%
+  mutate(month = format(latest.intake.date, "%Y-%m")) %>%
+  group_by(month) %>%
+  summarise(count = n())
+
+# Month Column to Date
+
+intake.monthly$month <- as.Date(paste0(intake.monthly$month, "-01"))
+
+# Monthly Count by Month:
+
+intake.monthly.count <- intake.monthly %>% arrange(month)
+
+# Highest Month:
+
+max <- intake.monthly %>%
+  filter(count == max(count))
+
+max.intake <- list(
+  month = max$month,
+  count = max$count
+)
+
+intake.monthly.count
+max.intake
+```
+
+
+```{r}
+# Monthly Count Plot:
+
+monthly.count.plot <- ggplot(intake.monthly, aes(x = month, y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Intakes Per Month", x = "Month", y = "Count") +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, size = 4)) 
+
+# Time-Series Plot:
+
+monthly.intake.plot <- ggplot(intake.monthly, aes(x = month, y = count)) +
+  geom_line(color = "blue") +
+  labs(title = "Monthly Intakes", x = "Month", y = "Number of Intakes") +
+  theme_minimal()
+
+monthly.count.plot
+monthly.intake.plot
+```
+```{r}
+ggplot(df.cl, aes(x = intake.type)) +
+  geom_bar(fill = "green", color = "black") +
+  labs(title = "Distribution of Intake Types", x = "Intake Type", y = "Count") +
+  theme_minimal()
+```
+
+### Engagement Survey (ORS, CRS, and RRS) Score Analysis:
+
+## Linear Model:
+
+```{r}
+# Counting difference in dates since a reference date:
+
+reference.date <- as.Date("2024-06-03")
+
+df.cl$days.since.intake <- as.numeric(difftime(reference.date, df.cl$latest.intake.date), units = "days")
+
+df.cl
+```
+
+```{r}
+# ORS Model:
+
+ors.model <- lm(ORS.Score ~ CRS.Score + RRS.Score + intake.type + age + gender + race + days.since.intake, data = df.cl)
+
+summary(ors.model)
+```
+
+```{r}
+# CRS Model:
+
+crs.model <- lm(CRS.Score ~ ORS.Score + RRS.Score + intake.type + age + gender + race + days.since.intake, data = df.cl)
+
+summary(crs.model)
+
+```
+```{r}
+# RRS Model:
+
+rrs.model <- lm(RRS.Score ~ ORS.Score + CRS.Score + intake.type + age + gender + race + days.since.intake, data = df.cl)
+
+summary(rrs.model)
+```
+# Interpretation:
+
+Examining the specific models that predict ORS.Score and RRS.Score, there were several significant findings. For the models predicting ORS.Score, both CRS.Score [-0.5707, p < 0.001] and RRS.Score [0.2341, p < 0.001] affect these. These coefficients indicate that higher Craving Rating Scale (CRS) scores correspond to lower Outcome Rating Scale (ORS) scores, while higher Relationship Rating Scale (RRS) scores correlate with higher ORS scores. Also, genderMale is positively associated with ORS.Score (1.9351, p = 0.0326), suggesting that males tend to achieve higher outcome scores.
+
+In the model predicting RRS.Score, ORS.Score shows a significant positive effect (0.6183, p < 0.001), indicating that higher ORS scores are linked to higher RRS scores. Additionally, intake.typeSelf/Walk-In (6.296, p = 0.00125) and days.since.intake (-0.0107, p = 0.019) significantly influence RRS.Score. This suggests that patients who self-refer or walk in tend to achieve higher RRS scores, while longer periods since intake slightly lower RRS scores.
+
+## Principal Component Analysis:
+
+```{r}
+# Numeric Score Columns
+
+df.scores <- select(df.cl, ends_with("Score"))
+
+df.scores
+```
+
+```{r}
+df.scaled <- scale(df.scores)
+
+pca.model <- prcomp(df.scaled, center = TRUE, scale. = TRUE)
+
+summary(pca.model)
+```
+# Interpretation:
+
+ PCA reveals that a significant portion of the variability can be understood through the first two principal components (PC1 and PC2), which collectively explain over 83% of the variance, suggesting that the data contains two major factors that can explain the relationships among the variables.
+ 
+## 10-Fold Cross-Validation Random Forest
+
+
+```{r}
+# ORS Model
+
+library(randomForest)
+library(caret)
+
+set.seed(123)
+
+tr.control <- trainControl(method = "cv", number = 10)
+
+ors.split <- createDataPartition(df.cl$ORS.Score, p = 0.7, list = FALSE)
+ors.train <- df.cl[ors.split,]
+ors.test <- df.cl[-ors.split, ]
+
+ors.rf <- randomForest(ORS.Score ~ CRS.Score + RRS.Score + intake.type + age + gender + race + days.since.intake,
+                       data = ors.train,
+                       method = 'rf',
+                       trControl = tr.control,
+                       ntree = 500)
+summary(ors.rf)
+```
+```{r}
+# Predicted values:
+
+ors.pred<- predict(ors.model, newdata = ors.test)
+ors.pred
+```
+```{r}
+# Importance:
+
+importance(ors.rf)
+varImpPlot(ors.rf)
+```
+```{r}
+# Actual vs. Predicted values:
+
+plot(ors.test$ORS.Score, ors.pred, main = "Actual vs. Predicted ORS Scores", xlab = "Actual ORS Score", ylab = "Predicted ORS Score")
+abline(0, 1, col = "blue") 
+```
+```{r}
+# Further Model Evaluation:
+
+ors.rmse <- sqrt(mean((ors.pred - ors.test$ORS.Score)^2))
+
+ors.r2 <- 1 - sum((ors.test$ORS.Score - ors.pred)^2) / sum((ors.test$ORS.Score - mean(ors.test$ORS.Score))^2)
+
+ors.rmse
+ors.r2
+```
+# Interpretation:
+
+The most influential factors on ORS.Score are CRS.Score (6179.0924) and days.since.intake (6086.3720), followed by RRS.Score (5368.4375). Intake.type, gender, race, and age also contribute significantly but not as strongly.
+
+In comparing actual vs predicted values for this model, results are fairly scattered, showing that there may be some decently sized differences between the actual scores and what the model is predicting. However, it is doing a decent job in prediction, as their is a positive correlation between the actual and predicted values, too. 
+
+The RMSE shows that on average, the model's predictions are off by 8.37 units from the actual ORS scores in the test set. With this said, it shows that there is room for improvement, considering the range of scores for the test, and 8.37 points is a large margin of error. The model explains about 29.1% of the variance in the ORS.Score based on the predictors used, from the r-squared score. 
+
+```{r}
+# CRS Model
+
+crs.split <- createDataPartition(df.cl$CRS.Score, p = 0.7, list = FALSE)
+crs.train <- df.cl[crs.split,]
+crs.test <- df.cl[-crs.split, ]
+
+crs.rf <- randomForest(CRS.Score ~ ORS.Score + RRS.Score + intake.type + age + gender + race + days.since.intake,
+                       data = crs.train,
+                       method = 'rf',
+                       trControl = tr.control,
+                       ntree = 500)
+summary(crs.rf)
+```
+```{r}
+# Predicted values:
+
+crs.pred<- predict(crs.model, newdata = crs.test)
+crs.pred
+```
+```{r}
+# Importance:
+
+importance(crs.rf)
+varImpPlot(crs.rf)
+```
+```{r}
+# Actual vs. Predicted values:
+
+plot(crs.test$CRS.Score, crs.pred, main = "Actual vs. Predicted CRS Scores", xlab = "Actual CRS Score", ylab = "Predicted CRS Score")
+abline(0, 1, col = "blue") 
+```
+```{r}
+# Further Model Evaluation:
+
+crs.rmse <- sqrt(mean((crs.pred - crs.test$CRS.Score)^2))
+
+crs.r2 <- 1 - sum((crs.test$CRS.Score - crs.pred)^2) / sum((crs.test$CRS.Score - mean(crs.test$CRS.Score))^2)
+
+crs.rmse
+crs.r2
+```
+# Interpretation:
+
+The most influential factors on CRS.Score are ORS.Score (3067.6164) and days.since.intake ( 2476.6632), followed by Age (1584.4536). RRS.Score, intake.type, race, and gender also contribute significantly but to a lesser extent.
+
+In comparing actual vs predicted values for this model, results are again somewhat scattered, suggesting moderate predictive accuracy. There is a positive correlation between the actual and predicted values, indicating that the model captures some underlying trends in the data. However, there are noticeable differences between the actual and predicted scores.
+
+The RMSE of 5.54 indicates that, on average, the model's predictions are off by this amount from the actual CRS scores in the test set. This implies there is room for improvement, especially considering the range of scores in the test data. The model explains approximately 18.9% of the variance in CRS.Score based on the predictors used, as indicated by the R-squared score.
+```{r}
+# RRS Model
+
+rrs.split <- createDataPartition(df.cl$RRS.Score, p = 0.7, list = FALSE)
+rrs.train <- df.cl[rrs.split,]
+rrs.test <- df.cl[-rrs.split, ]
+
+rrs.rf <- randomForest(RRS.Score ~ ORS.Score + CRS.Score + intake.type + age + gender + race + days.since.intake,
+                       data = crs.train,
+                       method = 'rf',
+                       trControl = tr.control,
+                       ntree = 500)
+summary(rrs.rf)
+```
+
+```{r}
+# Predicted values:
+
+rrs.pred<- predict(rrs.model, newdata = rrs.test)
+rrs.pred
+```
+```{r}
+# Importance:
+
+importance(rrs.rf)
+varImpPlot(rrs.rf)
+```
+```{r}
+# Actual vs. Predicted values:
+
+plot(rrs.test$RRS.Score, rrs.pred, main = "Actual vs. Predicted RRS Scores", xlab = "Actual RRS Score", ylab = "Predicted RRS Score")
+abline(0, 1, col = "blue") 
+```
+
+```{r}
+# Further Model Evaluation:
+
+rrs.rmse <- sqrt(mean((rrs.pred - rrs.test$RRS.Score)^2))
+
+rrs.r2 <- 1 - sum((rrs.test$RRS.Score - rrs.pred)^2) / sum((rrs.test$RRS.Score - mean(rrs.test$RRS.Score))^2)
+
+rrs.rmse
+rrs.r2
+```
+# Interpretation:
+
+The most influential factors on RRS.Score are ORS.Score (21113.799) days.since.intake (16792.587) followed by CRS.Score (12045.378). Age, intake.type, race, and gender also contribute significantly but to a lesser extent.
+
+In comparing actual vs predicted values for this model, results show considerable variability, suggesting that the model predictions have notable discrepancies from the actual scores. There is a positive correlation between the actual and predicted values, indicating some ability of the model to capture trends in the data.
+
+The RMSE of 13.44 indicates that, on average, the model's predictions are off by this amount from the actual RRS scores in the test set. This suggests there is considerable room for improvement, particularly given the range of scores in the test data. The model explains approximately 30.9% of the variance in RRS.Score based on the predictors used, as indicated by the R-squared score.
+
+## CoxPH Model:
+
+```{r}
+# ORS CoxPH Model:
+
+library(survival)
+library(asaur)
+
+ors.coxph.model <- coxph(Surv(days.since.intake, ors.increase) ~  1, data = df.cl)
+
+summary(ors.coxph.model)
+```
+```{r}
+# ORS Survival:
+
+ors.surv <- survfit(ors.coxph.model)
+
+ors.surv
+```
+```{r}
+# Plot Model:
+
+plot(ors.surv, main = "Survivability of Not Experiencing ORS Increase Over Time",
+     xlab = "Days Since Intake", ylab = "Survival Probability",
+     conf.int = TRUE, col = "blue", lwd = 2)
+```
+```{r}
+prop.table(table(df.cl$ors.increase)) * 100
+```
+
+# Interpretation:
+
+The Cox proportional hazards model for ORS reveals show many conclusions, with 34.8% of records increasing their ORS scores. The intake type significantly influences the likelihood of achieving higher ORS scores, with the "Other" category showing a substantial reduction in this likelihood [95% CI: 0.037-0.143, p < 2e-14]. This indicates that individuals categorized under "Other" are significantly less likely to experience an increase in ORS score compared to the reference group. The other levels of this factor ("Internal Referral," "Outreach," and "Self/Walk-In") are not statistically significant.
+
+The median survival time for experiencing an ORS score increase is 642 days, with a 95% confidence interval ranging from 467 to 716 days. This suggests that, on average, an ORS score increase is expected to occur within this time frame. The survival function indicates that the probability of not experiencing an increase in ORS score decreases over time, while the hazard function reveals varying risks associated with ORS score increases since intake.
+
+```{r}
+# CRS Cox PH Model:
+
+crs.coxph.model <- coxph(Surv(days.since.intake, crs.decrease) ~ 1 , data = df.cl)
+
+summary(crs.coxph.model)
+```
+
+```{r}
+# CRS Survival:
+
+crs.surv <- survfit(crs.coxph.model)
+
+crs.surv
+```
+```{r}
+# Plot Model:
+
+plot(crs.surv, main = "Survivability of Not Experiencing CRS Decrease Over Time",
+     xlab = "Days Since Intake", ylab = "Survival Probability",
+     conf.int = TRUE, col = "blue", lwd = 2)
+
+```
+```{r}
+prop.table(table(df.cl$crs.decrease)) * 100
+```
+# Interpretation:
+
+The survival analysis for CRS shows that the median survival time for experiencing a decrease in CRS score is not estimable, as the 95% confidence limits are NA. This suggests that within the observed time frame, there is insufficient data to estimate a reliable median time for a CRS score decrease, as only 17.97% of records decreasing CRS score. The survival function indicates that the probability of not experiencing a decrease in CRS score decreases over time, though the exact timing of such events remains uncertain due to the lack of an estimate.
+
+```{r}
+# RRS Cox PH Model:
+
+rrs.coxph.model <- coxph(Surv(days.since.intake, rrs.increase) ~ 1 , data = df.cl)
+
+summary(rrs.coxph.model)
+```
+```{r}
+# RRS Survival:
+
+rrs.surv <- survfit(rrs.coxph.model)
+
+rrs.surv
+```
+```{r}
+# Plot Model:
+
+plot(rrs.surv, main = "Survivability of Not Experiencing RRS Increase Over Time",
+     xlab = "Days Since Intake", ylab = "Survival Probability",
+     conf.int = TRUE, col = "blue", lwd = 2)
+
+```
+```{r}
+prop.table(table(df.cl$rrs.increase)) * 100
+```
+
+# Interpretation:
+
+The Cox proportional hazards model for RRS indicates that the median survival time for experiencing an increase in RRS score could not be determined, as the median value is reported as not available, as only 28.37% of records were positive for increasing RRS score. However, the upper 95% confidence limit for the survival time is reported as 816 days. Other predictors did not show statistically significant effects on the likelihood of an RRS score increase.
+
+
+### Conclusion:
+
+In exploratory analysis the average scores among all averages for patients from their latest test dates, in the program for Outcome Rating Scale, Cravings Rating Scale, and Relationship Rating Scale was 23.17981, 4.516719, 14.77521, respectively. These scores are relatively high, with the CRS score desired to be lower as it relates to the patients level of addiction cravings, with the respective ranges for these scores being 0:40, 0:20, 0:40. The relationship rating scale average, the relationship between the patient and their recovery coach, it fairly low. In addition, since the start of the intake data collection on 15 February 2020, the highest amount of intakes in a month, occurred in November of 2023, with 40 new patient intakes completed.
+
+In examining the ORS linear model, the CRS.Score [-0.5707, p < 0.001], RRS.Score [0.2341, p < 0.001.], and genderMale [1.9351, p = 0.0326] were statistically significant. These coefficients indicate that higher Craving Rating Scale (CRS) scores correspond to lower Outcome Rating Scale (ORS) scores, while higher Relationship Rating Scale (RRS) scores correlate with higher ORS scores. 
+
+This is a good relationship outcome as we would want CRS to decrease, while ORS increases. Also, genderMale is positively associated with ORS.Score, suggesting that males tend to achieve higher outcome scores. 
+
+CRS.Score reveals that ORS.Score is a highly significant predictor, with a strong negative relationship indicating that higher ORS scores are associated with lower CRS scores. Days since intake is also significant, suggesting a negative impact on CRS.Score over time. Race variables including "Black or African American; White; Native American," "Native American," "Other," and "White" show significant negative effects on CRS.Score. RRS.Score and the intake type "Self/Walk-In" approach marginal significance, while other intake types, age, gender, and most race categories do not significantly impact the CRS.Score. The model explains about 23% of the variance in CRS.Score, with a high F-statistic underscoring its overall significance.
+
+In the model predicting RRS.Score, ORS.Score shows a significant positive effect [0.6183, p < 0.001], indicating that higher ORS scores are linked to higher RRS scores. Additionally, intake.typeSelf/Walk-In [6.296, p = 0.00125] and days.since.intake [-0.0107, p = 0.019] significantly influence RRS.Score. 
+
+This suggests that patients who self-refer or walk in tend to achieve higher RRS scores, while longer periods since intake slightly lower RRS scores. This is fairly desirable as an outcome, and maybe even expected as those that self walk-in tend to want have help and may view their coaches in a better light, however there is also a link between how long patients have existed with the program and having worsened relationships with their coach.
+
+In our Principle Component Analysis, we found that a large portion of the variability is based in the first two principal components (PC1 and PC2), which explain over 83% of the variance, suggesting that the data contains two major factors that can explain the relationships among the variables.
+
+The next step was creating 10-fold cross validation model. In the ORS model, we found the most influential factors on ORS.Score are CRS.Score and days.since.intake, followed by RRS.Score. Intake.type, gender, race, and age also contribute significantly but not as strongly. In comparing actual vs predicted values for this model, results are fairly scattered, showing that there may be some decently sized differences between the actual scores and what the model is predicting. However, it is doing a decent job in prediction, as their is a positive correlation between the actual and predicted values, too. The RMSE shows that on average, the model's predictions are off by 8.37 units from the actual ORS scores in the test set. With this said, it shows that there is room for improvement, considering the range of scores for the test, and 8.37 points is a large margin of error. The model explains about 29.1% of the variance in the ORS.Score based on the predictors used, from the r-squared score. 
+
+In the model for CRS.Score, the most influential factors on CRS.Score are ORS.Score and days.since.intake, followed by age. RRS.Score, intake.type, race, and gender also contribute significantly but, again, to a lesser extent. In comparing actual vs predicted values for this model, results are again somewhat scattered, suggesting moderate predictive accuracy. There is a positive correlation between the actual and predicted values, indicating that the model captures some underlying trends in the data. However, there are noticeable differences between the actual and predicted scores. The RMSE of 5.54 indicates that, on average, the model's predictions are off by this amount from the actual CRS scores in the test set. This implies there is room for improvement, especially considering the range of scores in the test data. The model explains approximately 18.9% of the variance in CRS.Score based on the predictors used, as indicated by the R-squared score.
+
+Lastly, for the CV RF model regarding RRS.Score, the most influential factors on RRS.Score are ORS.Score, days.since.intake, followed by CRS.Score. Age, intake.type, race, and gender also contribute slightly. When comparing actual vs predicted values for this model, results show considerable variability, suggesting that the model predictions have notable discrepancies from the actual scores. There is a positive correlation between the actual and predicted values, indicating some ability of the model to capture trends in the data. The RMSE of 13.44 indicates that, on average, the model's predictions are off by this amount from the actual RRS scores in the test set. This suggests there is considerable room for improvement, particularly given the range of scores in the test data. The model explains approximately 30.9% of the variance in RRS.Score based on the predictors used, as indicated by the R-squared score.
+
+When examining intake data, the Cox proportional hazards model for ORS reveals that 34.8% of records have increased their ORS scores. The intake type significantly influences the likelihood of achieving higher ORS scores, with the "Other" category showing a substantial reduction in this likelihood [95% CI: 0.037-0.143, p < 2e-14]. This indicates that individuals categorized under "Other" are significantly less likely to experience an increase in ORS score compared to the reference group. The other levels of this factor ("Internal Referral," "Outreach," and "Self/Walk-In") are not statistically significant.
+
+The median survival time for experiencing an ORS score increase is 642 days, with a 95% confidence interval ranging from 467 to 716 days. This suggests that, on average, an ORS score increase is expected to occur within this time frame. The survival function indicates that the probability of not experiencing an increase in ORS score decreases over time, while the hazard function reveals varying risks associated with ORS score increases since intake.
+
+In the model for CRS score, the median survival time for experiencing a decrease in CRS score is not estimable, as the 95% confidence limits are NA. This suggests that within the observed time frame, there is insufficient data to estimate a reliable median time for a CRS score decrease, with only 17.97% of records showing a decrease in CRS score. The survival function indicates that the probability of not experiencing a decrease in CRS score decreases over time, though the exact timing of such events remains uncertain due to the lack of an estimate.
+
+The Cox proportional hazards model for RRS indicates that the median survival time for experiencing an increase in RRS score could not be determined, as the median value is reported as not available. Only 28.37% of records were positive for increasing RRS score, but the upper 95% confidence limit for the survival time is reported as 816 days. Other predictors did not show statistically significant effects on the likelihood of an RRS score increase.
